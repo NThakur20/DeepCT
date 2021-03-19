@@ -939,8 +939,8 @@ def input_fn_builder(features, seq_length, is_training, drop_remainder):
         all_input_ids.append(feature.input_ids)
         all_input_mask.append(feature.input_mask)
         all_segment_ids.append(feature.segment_ids)
-        all_target_weights.append(features.target_weights)
-        all_target_mask.append(features.target_mask)
+        all_target_weights.append(feature.target_weights)
+        all_target_mask.append(feature.target_mask)
 
     def input_fn(params):
         """The actual input function."""
@@ -972,11 +972,18 @@ def input_fn_builder(features, seq_length, is_training, drop_remainder):
                     shape=[num_examples, seq_length],
                     dtype=tf.float32),
             "target_mask":
-            tf.constant(
-                all_target_mask,
-                shape=[num_examples, seq_length],
-                dtype=tf.int32,
-            )
+                tf.constant(
+                    all_target_mask,
+                    shape=[num_examples, seq_length],
+                    dtype=tf.int32,
+                ),
+            "is_real_example": 
+                tf.constant(
+                    1, 
+                    shape=[num_examples, seq_length], 
+                    dtype=tf.int64
+                ),
+            
         })
 
         if is_training:
@@ -998,7 +1005,7 @@ def convert_examples_to_features(examples, label_list, max_seq_length,
     features = []
     for (ex_index, example) in enumerate(examples):
         if ex_index % 10000 == 0:
-            tf.logging.info("Writing example %d of %d" % (ex_index, len(examples)))
+            tf.logging.info("Writing example %d" % (ex_index))
 
         feature = convert_single_example(ex_index, example, max_seq_length, tokenizer)
 
