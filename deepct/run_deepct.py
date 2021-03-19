@@ -30,7 +30,7 @@ import random
 import json
 import re
 
-flags = tf.compat.v1.flags.Flag
+flags = tf.compat.v1.flags
 
 FLAGS = flags.FLAGS
 
