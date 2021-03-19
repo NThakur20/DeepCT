@@ -22,9 +22,9 @@ import collections
 import csv
 import os
 import numpy as np
-import modeling
-import optimization
-import tokenization
+from . import modeling
+from . import optimization
+from . import tokenization
 import tensorflow as tf
 import random
 import json
