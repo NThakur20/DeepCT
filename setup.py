@@ -10,6 +10,6 @@ setup(
     packages=['deepct'],
     long_description=readme,
     install_requires=[
-        'tensorflow', 
+        'tensorflow>2.0', 
     ],
 )
