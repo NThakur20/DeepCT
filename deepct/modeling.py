@@ -25,6 +25,7 @@ import math
 import re
 import six
 import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 
 
 class BertConfig(object):
@@ -359,11 +360,13 @@ def dropout(input_tensor, dropout_prob):
   output = tf.nn.dropout(input_tensor, 1.0 - dropout_prob)
   return output
 
-
+ 
 def layer_norm(input_tensor, name=None):
   """Run layer normalization on the last dimension of the tensor."""
-  return tf.contrib.layers.layer_norm(
-      inputs=input_tensor, begin_norm_axis=-1, begin_params_axis=-1, scope=name)
+  # https://github.com/tensorflow/tensorflow/issues/26854#issuecomment-573382287
+  return tf.keras.layers.LayerNormalization(name=name,axis=-1,epsilon=1e-12,dtype=tf.float32)(input_tensor)
+  # return tf.contrib.layers.layer_norm(
+  #     inputs=input_tensor, begin_norm_axis=-1, begin_params_axis=-1, scope=name) 
 
 
 def layer_norm_and_dropout(input_tensor, dropout_prob, name=None):

@@ -22,13 +22,18 @@ import collections
 import csv
 import os
 import numpy as np
+from tqdm.autonotebook import tqdm
 from . import modeling
 from . import optimization
 from . import tokenization
+from . import util
 import tensorflow as tf
 import random
 import json
 import re
+
+import logging
+logging.getLogger("tensorflow").setLevel(logging.ERROR)
 
 flags = tf.compat.v1.flags
 
@@ -145,6 +150,28 @@ flags.DEFINE_string(
     "doc_field", None,
     "title, body, url")
 
+# Cutom added by Nandan for BEIR
+
+flags.DEFINE_integer(
+    "m", 100, 
+    "scaling parameter > 0, recommend 100")
+
+flags.DEFINE_string(
+    "smoothing", "sqrt", 
+    "choices = ['none', 'sqrt'] optionally use sqrt to smooth weights. Paper uses none..")
+
+flags.DEFINE_bool("keep_all_terms", True, "do not allow DeepCT to delete terms. Default: true")
+
+
+flags.DEFINE_string(
+    "output", None,
+    "The output directory where the model checkpoints will be written.")
+
+flags.DEFINE_string(
+    "output_file", "deepct.jsonl",
+    "The output file where the final deepct generated corpus would be stored.")
+
+
 class InputExample(object):
     """A single training/test example for simple sequence classification."""
 
@@ -217,7 +244,7 @@ class DataProcessor(object):
     @classmethod
     def _read_tsv(cls, input_file, quotechar=None):
         """Reads a tab separated value file."""
-        with tf.gfile.Open(input_file, "r") as f:
+        with tf.io.gfile.GFile(input_file, "r") as f:
             reader = csv.reader(f, delimiter="\t", quotechar=quotechar)
             lines = []
             for line in reader:
@@ -330,6 +357,30 @@ class MarcoTsvDocProcessor(DataProcessor):
             test_file.close()
         return examples
 
+class BeirProcessor(DataProcessor):
+
+    def get_test_examples(self, data_dir):
+        test_files = [data_dir]
+        examples = []
+
+        for file_name in test_files:
+            test_file = open(file_name)
+            for i, line in enumerate(test_file):
+                jdict = json.loads(line)
+                docid = jdict["_id"]
+                doc_text = (jdict["title"] + " " + jdict["text"]).strip()
+                doc_text = tokenization.convert_to_unicode(doc_text)
+                term_recall_dict = {}
+                if not doc_text.strip():
+                     doc_text = '.'
+
+                guid = "%s" % docid
+                examples.append(
+                    InputExample(guid=guid, text=doc_text, term_recall_dict=term_recall_dict)
+                )
+            test_file.close()
+        return examples
+
 class IdContentsJsonDocProcessor(DataProcessor):
 
     def get_test_examples(self, data_dir):
@@ -386,7 +437,7 @@ class MarcoQueryProcessor(DataProcessor):
 
     def __init__(self):
         self.recall_field = FLAGS.recall_field
-        tf.logging.info("Using recall fields {}".format(self.recall_field))
+        tf.compat.v1.logging.info("Using recall fields {}".format(self.recall_field))
 
     def get_train_examples(self, data_dir):
         examples = []
@@ -452,14 +503,14 @@ class QueryProcessor(DataProcessor):
         self.n_folds = 5
         self.fold = FLAGS.fold
         self.recall_fields = FLAGS.recall_field.split(',')
-        tf.logging.info("Using recall fields {}".format(self.recall_fields))
+        tf.compat.v1.logging.info("Using recall fields {}".format(self.recall_fields))
 
         self.train_folds = [(self.fold + i) % self.n_folds + 1 for i in range(self.n_folds - 2)]
         self.dev_fold = (self.fold + self.n_folds - 2) % self.n_folds + 1
         self.test_fold = (self.fold + self.n_folds - 1) % self.n_folds + 1
-        tf.logging.info("Train Folds: {}".format(str(self.train_folds)))
-        tf.logging.info("Dev Fold: {}".format(str(self.dev_fold)))
-        tf.logging.info("Test Fold: {}".format(str(self.test_fold)))
+        tf.compat.v1.logging.info("Train Folds: {}".format(str(self.train_folds)))
+        tf.compat.v1.logging.info("Dev Fold: {}".format(str(self.dev_fold)))
+        tf.compat.v1.logging.info("Test Fold: {}".format(str(self.test_fold)))
 
     def get_train_examples(self, data_dir):
         examples = []
@@ -644,15 +695,15 @@ def convert_single_example(ex_index, example, max_seq_length,
     assert len(target_mask) == max_seq_length
 
     if ex_index < 5:
-        tf.logging.info("*** Example ***")
-        tf.logging.info("guid: %s" % (example.guid))
-        tf.logging.info("tokens: %s" % " ".join(
+        tf.compat.v1.logging.info("*** Example ***")
+        tf.compat.v1.logging.info("guid: %s" % (example.guid))
+        tf.compat.v1.logging.info("tokens: %s" % " ".join(
             [tokenization.printable_text(x) for x in tokens]))
-        tf.logging.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
-        tf.logging.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
-        tf.logging.info("segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
-        tf.logging.info("target_weights: %s" % " ".join([str(x) for x in target_weights]))
-        tf.logging.info("target_mask: %s" % " ".join([str(x) for x in target_mask]))
+        tf.compat.v1.logging.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
+        tf.compat.v1.logging.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
+        tf.compat.v1.logging.info("segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
+        tf.compat.v1.logging.info("target_weights: %s" % " ".join([str(x) for x in target_weights]))
+        tf.compat.v1.logging.info("target_mask: %s" % " ".join([str(x) for x in target_mask]))
 
     feature = InputFeatures(
         input_ids=input_ids,
@@ -668,11 +719,11 @@ def file_based_convert_examples_to_features(
         examples, max_seq_length, tokenizer, output_file):
     """Convert a set of `InputExample`s to a TFRecord file."""
 
-    writer = tf.python_io.TFRecordWriter(output_file)
+    writer = tf.io.TFRecordWriter(output_file)
 
     for (ex_index, example) in enumerate(examples):
         if ex_index % 10000 == 0:
-            tf.logging.info("Writing example %d of %d" % (ex_index, len(examples)))
+            tf.compat.v1.logging.info("Writing example %d of %d" % (ex_index, len(examples)))
 
         feature = convert_single_example(ex_index, example,
                                          max_seq_length, tokenizer)
@@ -704,26 +755,26 @@ def file_based_input_fn_builder(input_files, seq_length, is_training,
     """Creates an `input_fn` closure to be passed to TPUEstimator."""
 
     name_to_features = {
-        "input_ids": tf.FixedLenFeature([seq_length], tf.int64),
-        "input_mask": tf.FixedLenFeature([seq_length], tf.int64),
-        "segment_ids": tf.FixedLenFeature([seq_length], tf.int64),
-        "target_weights": tf.FixedLenFeature([seq_length], tf.float32),
-        "target_mask": tf.FixedLenFeature([seq_length], tf.int64),
-        "is_real_example": tf.FixedLenFeature([], tf.int64),
+        "input_ids": tf.io.FixedLenFeature([seq_length], tf.int64),
+        "input_mask": tf.io.FixedLenFeature([seq_length], tf.int64),
+        "segment_ids": tf.io.FixedLenFeature([seq_length], tf.int64),
+        "target_weights": tf.io.FixedLenFeature([seq_length], tf.float32),
+        "target_mask": tf.io.FixedLenFeature([seq_length], tf.int64),
+        "is_real_example": tf.io.FixedLenFeature([], tf.int64),
     }
     if isinstance(input_files, str):
         input_files = input_files.split(',') 
 
     def _decode_record(record, name_to_features):
         """Decodes a record to a TensorFlow example."""
-        example = tf.parse_single_example(record, name_to_features)
+        example = tf.io.parse_single_example(serialized=record, features=name_to_features)
 
         # tf.Example only supports tf.int64, but the TPU only supports tf.int32.
         # So cast all int64 to int32.
         for name in list(example.keys()):
             t = example[name]
             if t.dtype == tf.int64:
-                t = tf.to_int32(t)
+                t = tf.cast(t, dtype=tf.int32)
             example[name] = t
 
         return example
@@ -746,7 +797,7 @@ def file_based_input_fn_builder(input_files, seq_length, is_training,
             # `sloppy` mode means that the interleaving is not exact. This adds
             # even more randomness to the training pipeline.
             d = d.apply(
-                tf.contrib.data.parallel_interleave(
+                tf.data.experimental.parallel_interleave(
                     tf.data.TFRecordDataset,
                     sloppy=True,
                     cycle_length=cycle_length))
@@ -756,7 +807,7 @@ def file_based_input_fn_builder(input_files, seq_length, is_training,
             d = tf.data.TFRecordDataset(input_files)
 
         d = d.apply(
-            tf.contrib.data.map_and_batch(
+            tf.data.experimental.map_and_batch(
                 lambda record: _decode_record(record, name_to_features),
                 batch_size=batch_size,
                 drop_remainder=drop_remainder))
@@ -787,48 +838,48 @@ def create_model(bert_config, is_training, input_ids, input_mask, segment_ids,
     if use_all_layers:
         all_encoder_layers = model.get_all_encoder_layers() # [natcj_size, seq_lenght, hidden_size, nlayers]
         bert_output_layer = tf.concat(all_encoder_layers, -1) 
-        tf.logging.info(bert_output_layer.shape)
+        tf.compat.v1.logging.info(bert_output_layer.shape)
     else:
         bert_output_layer = model.get_sequence_output()  # [batch_size, seq_length, hidden_size]
     #bert_output_layer = bert_output_layer - bert_output_cls
-    tf.logging.info(bert_output_layer.shape)
+    tf.compat.v1.logging.info(bert_output_layer.shape)
     hidden_size = bert_output_layer.shape[-1].value
     seq_length = bert_output_layer.shape[-2].value
-    tf.logging.info(hidden_size)
-    tf.logging.info(seq_length)
+    tf.compat.v1.logging.info(hidden_size)
+    tf.compat.v1.logging.info(seq_length)
     bert_output_layer = tf.reshape(bert_output_layer, [-1, hidden_size])  # [batch_size * seq_length, hidden_size]
-    tf.logging.info(bert_output_layer.shape)
+    tf.compat.v1.logging.info(bert_output_layer.shape)
 
-    output_weights = tf.get_variable(
+    output_weights = tf.compat.v1.get_variable(
         "tw_output_weights", [1, hidden_size],
-        initializer=tf.truncated_normal_initializer(stddev=0.02))
+        initializer=tf.compat.v1.truncated_normal_initializer(stddev=0.02))
 
-    output_bias = tf.get_variable(
-        "tw_output_bias", [1], initializer=tf.zeros_initializer())
+    output_bias = tf.compat.v1.get_variable(
+        "tw_output_bias", [1], initializer=tf.compat.v1.zeros_initializer())
 
-    with tf.variable_scope("loss"):
+    with tf.compat.v1.variable_scope("loss"):
         if is_training:
             # I.e., 0.1 dropout
-            bert_output_layer = tf.nn.dropout(bert_output_layer, keep_prob=0.9)
+            bert_output_layer = tf.nn.dropout(bert_output_layer, rate=1 - (0.9))
 
         logits = tf.matmul(bert_output_layer, output_weights, transpose_b=True)  # [batch_size * seq_length, 1]
         logits = tf.nn.bias_add(logits, output_bias)  # [batch_size * seq_length, 1]
         logits = tf.reshape(logits, [-1, seq_length])
-        loss = tf.losses.mean_squared_error(
+        loss = tf.compat.v1.losses.mean_squared_error(
             labels=target_weights,
             predictions=logits,
             weights=target_mask,
-            reduction=tf.losses.Reduction.SUM_BY_NONZERO_WEIGHTS)
-        per_example_loss = tf.losses.mean_squared_error(
+            reduction=tf.compat.v1.losses.Reduction.SUM_BY_NONZERO_WEIGHTS)
+        per_example_loss = tf.compat.v1.losses.mean_squared_error(
             labels=target_weights,
             predictions=logits,
             weights=target_mask,
-            reduction=tf.losses.Reduction.NONE)
-        per_example_loss = tf.reduce_sum(per_example_loss, axis=-1)
-        masked_logits = logits * tf.to_float(target_mask)
+            reduction=tf.compat.v1.losses.Reduction.NONE)
+        per_example_loss = tf.reduce_sum(input_tensor=per_example_loss, axis=-1)
+        masked_logits = logits * tf.cast(target_mask, dtype=tf.float32)
 
         probabilities = tf.nn.sigmoid(logits) # [batch_size * seq_length, hidden_size]
-        masked_probabilities = probabilities * tf.to_float(target_mask)
+        masked_probabilities = probabilities * tf.cast(target_mask, dtype=tf.float32)
         # log_probs = tf.nn.log_softmax(logits, axis=-1)
         #one_hot_labels = tf.one_hot(labels, depth=num_labels, dtype=tf.float32)
         #per_example_loss = -tf.reduce_sum(one_hot_labels * log_probs, axis=-1)
@@ -845,9 +896,9 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
     def model_fn(features, mode, params):  # pylint: disable=unused-argument
         """The `model_fn` for TPUEstimator."""
 
-        tf.logging.info("*** Features ***")
+        tf.compat.v1.logging.info("*** Features ***")
         for name in sorted(features.keys()):
-            tf.logging.info("  name = %s, shape = %s" % (name, features[name].shape))
+            tf.compat.v1.logging.info("  name = %s, shape = %s" % (name, features[name].shape))
 
         input_ids = features["input_ids"]
         input_mask = features["input_mask"]
@@ -859,14 +910,14 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
         if "is_real_example" in features:
             is_real_example = tf.cast(features["is_real_example"], dtype=tf.float32)
         else:
-            is_real_example = tf.ones(tf.shape(label_ids), dtype=tf.float32)
+            is_real_example = tf.ones(tf.shape(input=label_ids), dtype=tf.float32)
 
         is_training = (mode == tf.estimator.ModeKeys.TRAIN)
 
         (total_loss, per_example_loss, logits) = create_model(
             bert_config, is_training, input_ids, input_mask, segment_ids, target_weights, target_mask, use_one_hot_embeddings, use_all_layers)
 
-        tvars = tf.trainable_variables()
+        tvars = tf.compat.v1.trainable_variables()
         initialized_variable_names = {}
         scaffold_fn = None
         if init_checkpoint:
@@ -875,19 +926,19 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
             if use_tpu:
 
                 def tpu_scaffold():
-                    tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
-                    return tf.train.Scaffold()
+                    tf.compat.v1.train.init_from_checkpoint(init_checkpoint, assignment_map)
+                    return tf.compat.v1.train.Scaffold()
 
                 scaffold_fn = tpu_scaffold
             else:
-                tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
+                tf.compat.v1.train.init_from_checkpoint(init_checkpoint, assignment_map)
 
-        tf.logging.info("**** Trainable Variables ****")
+        tf.compat.v1.logging.info("**** Trainable Variables ****")
         for var in tvars:
             init_string = ""
             if var.name in initialized_variable_names:
                 init_string = ", *INIT_FROM_CKPT*"
-            tf.logging.info("  name = %s, shape = %s%s", var.name, var.shape,
+            tf.compat.v1.logging.info("  name = %s, shape = %s%s", var.name, var.shape,
                             init_string)
 
         output_spec = None
@@ -896,26 +947,26 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
             train_op = optimization.create_optimizer(
                 total_loss, learning_rate, num_train_steps, num_warmup_steps, use_tpu)
 
-            output_spec = tf.contrib.tpu.TPUEstimatorSpec(
+            output_spec = tf.compat.v1.estimator.tpu.TPUEstimatorSpec(
                 mode=mode,
                 loss=total_loss,
                 train_op=train_op,
                 scaffold_fn=scaffold_fn)
         elif mode == tf.estimator.ModeKeys.EVAL:
             def metric_fn(per_example_loss):
-                loss = tf.metrics.mean(values=per_example_loss)
+                loss = tf.compat.v1.metrics.mean(values=per_example_loss)
                 return {
                     "eval_loss": loss
                 }
 
             eval_metrics = (metric_fn, [total_loss])
-            output_spec = tf.contrib.tpu.TPUEstimatorSpec(
+            output_spec = tf.compat.v1.estimator.tpu.TPUEstimatorSpec(
                 mode=mode,
                 loss=total_loss,
                 eval_metrics=eval_metrics,
                 scaffold_fn=scaffold_fn)
         else:
-            output_spec = tf.contrib.tpu.TPUEstimatorSpec(
+            output_spec = tf.compat.v1.estimator.tpu.TPUEstimatorSpec(
                 mode=mode,
                 predictions={"logits": logits, "target_weights": target_weights, "token_ids": input_ids},
                 scaffold_fn=scaffold_fn)
@@ -1005,7 +1056,7 @@ def convert_examples_to_features(examples, label_list, max_seq_length,
     features = []
     for (ex_index, example) in enumerate(examples):
         if ex_index % 10000 == 0:
-            tf.logging.info("Writing example %d" % (ex_index))
+            tf.compat.v1.logging.info("Writing example %d" % (ex_index))
 
         feature = convert_single_example(ex_index, example, max_seq_length, tokenizer)
 
@@ -1013,16 +1064,16 @@ def convert_examples_to_features(examples, label_list, max_seq_length,
     return features
 
 
-def main(_):
-    tf.logging.set_verbosity(tf.logging.INFO)
-
+def main():
+        
     processors = {"query": QueryProcessor,
                   "marcoquery": MarcoQueryProcessor,
                   "marcodoc": MarcoDocProcessor, 
                   "marcotsvdoc": MarcoTsvDocProcessor,
                   "cardoc": CarDocProcessor, 
                   "carjsondoc": CarJsonDocProcessor,
-                  "idcontentsjson": IdContentsJsonDocProcessor
+                  "idcontentsjson": IdContentsJsonDocProcessor,
+                  "beir": BeirProcessor,
                   }
 
     tokenization.validate_case_matches_checkpoint(FLAGS.do_lower_case,
@@ -1040,11 +1091,9 @@ def main(_):
             "was only trained up to sequence length %d" %
             (FLAGS.max_seq_length, bert_config.max_position_embeddings))
 
-    tf.gfile.MakeDirs(FLAGS.output_dir)
+    tf.io.gfile.makedirs(FLAGS.output_dir)
 
     task_name = FLAGS.task_name.lower()
-
-
 
 
     if task_name not in processors:
@@ -1057,16 +1106,16 @@ def main(_):
 
     tpu_cluster_resolver = None
     if FLAGS.use_tpu and FLAGS.tpu_name:
-        tpu_cluster_resolver = tf.contrib.cluster_resolver.TPUClusterResolver(
+        tpu_cluster_resolver = tf.distribute.cluster_resolver.TPUClusterResolver(
             FLAGS.tpu_name, zone=FLAGS.tpu_zone, project=FLAGS.gcp_project)
 
-    is_per_host = tf.contrib.tpu.InputPipelineConfig.PER_HOST_V2
-    run_config = tf.contrib.tpu.RunConfig(
+    is_per_host = tf.compat.v1.estimator.tpu.InputPipelineConfig.PER_HOST_V2
+    run_config = tf.compat.v1.estimator.tpu.RunConfig(
         cluster=tpu_cluster_resolver,
         master=FLAGS.master,
         model_dir=FLAGS.output_dir,
         save_checkpoints_steps=FLAGS.save_checkpoints_steps,
-        tpu_config=tf.contrib.tpu.TPUConfig(
+        tpu_config=tf.compat.v1.estimator.tpu.TPUConfig(
             iterations_per_loop=FLAGS.iterations_per_loop,
             num_shards=FLAGS.num_tpu_cores,
             per_host_input_for_training=is_per_host))
@@ -1098,7 +1147,7 @@ def main(_):
         use_one_hot_embeddings=FLAGS.use_tpu, 
         use_all_layers=FLAGS.use_all_layers)
 
-    estimator = tf.contrib.tpu.TPUEstimator(
+    estimator = tf.compat.v1.estimator.tpu.TPUEstimator(
         use_tpu=FLAGS.use_tpu,
         model_fn=model_fn,
         config=run_config,
@@ -1107,10 +1156,10 @@ def main(_):
         predict_batch_size=FLAGS.predict_batch_size)
 
     if FLAGS.do_train:
-        tf.logging.info("***** Running training *****")
-        tf.logging.info("  Num examples = %d", len(train_examples))
-        tf.logging.info("  Batch size = %d", FLAGS.train_batch_size)
-        tf.logging.info("  Num steps = %d", num_train_steps)
+        tf.compat.v1.logging.info("***** Running training *****")
+        tf.compat.v1.logging.info("  Num examples = %d", len(train_examples))
+        tf.compat.v1.logging.info("  Batch size = %d", FLAGS.train_batch_size)
+        tf.compat.v1.logging.info("  Num steps = %d", num_train_steps)
         train_input_fn = file_based_input_fn_builder(
             input_files=train_file,
             seq_length=FLAGS.max_seq_length,
@@ -1121,6 +1170,8 @@ def main(_):
 
     if FLAGS.do_predict:
         predict_examples = processor.get_test_examples(FLAGS.data_dir)
+        prediction_ids = [example.guid for example in predict_examples] 
+        
         num_actual_predict_examples = len(predict_examples)
         if FLAGS.use_tpu:
             # TPU requires a fixed batch size for all batches, therefore the number
@@ -1138,11 +1189,11 @@ def main(_):
         #tf.logging.info("I am NOT runnign model")
         #exit(-1)
 
-        tf.logging.info("***** Running prediction*****")
-        tf.logging.info("  Num examples = %d (%d actual, %d padding)",
+        tf.compat.v1.logging.info("***** Running prediction*****")
+        tf.compat.v1.logging.info("  Num examples = %d (%d actual, %d padding)",
                         len(predict_examples), num_actual_predict_examples,
                         len(predict_examples) - num_actual_predict_examples)
-        tf.logging.info("  Batch size = %d", FLAGS.predict_batch_size)
+        tf.compat.v1.logging.info("  Batch size = %d", FLAGS.predict_batch_size)
 
         predict_drop_remainder = True if FLAGS.use_tpu else False
         predict_input_fn = file_based_input_fn_builder(
@@ -1153,19 +1204,27 @@ def main(_):
 
         result = estimator.predict(input_fn=predict_input_fn)
 
-        output_predict_file = os.path.join(FLAGS.output_dir, "test_results.tsv")
-        with tf.gfile.GFile(output_predict_file, "w") as writer:
+        output_predict_file = os.path.join(FLAGS.output_dir, FLAGS.output_file)
+        with tf.io.gfile.GFile(output_predict_file, "w") as writer:
             num_written_lines = 0
-            tf.logging.info("***** Predict results *****")
-            for (i, prediction) in enumerate(result):
+            tf.compat.v1.logging.info("***** Predict results *****")
+            for (idx, prediction) in enumerate(tqdm(result, total=num_actual_predict_examples)):
                 targets = prediction["target_weights"]
                 logits = prediction["logits"]
                 tokens = tokenizer.convert_ids_to_tokens(prediction["token_ids"])
-                if i >= num_actual_predict_examples:
+                if idx >= num_actual_predict_examples:
                     break
                 output_line = '\t'.join(['{0} {1:.5f}'.format(t, w) for (t, w) in zip(tokens, logits) if t != '[PAD]' and t != '[CLS]'])
-                writer.write(output_line)
-                writer.write('\n')
+                selected_tokens = util.subword_weight_to_word_weight(output_line, FLAGS.m, FLAGS.smoothing, FLAGS.keep_all_terms)
+                if not selected_tokens: 
+                    e += 1
+                    continue
+                sampled_tokens = []
+                for t, termfreq in selected_tokens.items():
+                    sampled_tokens += [t] * termfreq
+                dtext = ' '.join(sampled_tokens)
+                writer.write(json.dumps({"id": prediction_ids[idx], "contents": dtext.strip()}))
+                writer.write("\n")
                 num_written_lines += 1
         assert num_written_lines == num_actual_predict_examples
 
@@ -1176,4 +1235,4 @@ if __name__ == "__main__":
     flags.mark_flag_as_required("vocab_file")
     flags.mark_flag_as_required("bert_config_file")
     flags.mark_flag_as_required("output_dir")
-    tf.app.run()
+    tf.compat.v1.app.run()
